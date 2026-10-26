@@ -99,11 +99,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1793018532,
+          "publishTimestamp": 1793018582,
           "source": {
             "type": "git",
             "url": "https://github.com/wff151/dsh-memory",
-            "commit": "db482c743543e676bb2217b607de0643973358da"
+            "commit": "f5cc94ddfca76ff7d35a9a668a3c00912ea44a85"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.2"
