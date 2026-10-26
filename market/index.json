@@ -1,0 +1,115 @@
+{
+  "format": 1,
+  "title": {
+    "en": "wff151 plugins",
+    "zh-cn": "wff151 插件集"
+  },
+  "description": {
+    "en": "Plugins for DeepSeek Harness by wff151.",
+    "zh-cn": "wff151 为 DeepSeek Harness 提供的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "memory": {
+        "title": {
+          "en": "Memory",
+          "zh-cn": "记忆"
+        }
+      },
+      "tools": {
+        "title": {
+          "en": "Tools",
+          "zh-cn": "工具"
+        }
+      }
+    },
+    "labels": {
+      "stable": {
+        "title": {
+          "en": "Stable",
+          "zh-cn": "稳定"
+        }
+      },
+      "experimental": {
+        "title": {
+          "en": "Experimental",
+          "zh-cn": "实验"
+        }
+      },
+      "no-model-needed": {
+        "title": {
+          "en": "No model needed",
+          "zh-cn": "无需额外模型"
+        }
+      },
+      "chinese": {
+        "title": {
+          "en": "Chinese",
+          "zh-cn": "中文"
+        }
+      }
+    },
+    "sortKeys": {
+      "stars": {
+        "title": {
+          "en": "Popularity",
+          "zh-cn": "热度"
+        },
+        "order": "desc"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-memory",
+      "title": {
+        "en": "Memory",
+        "zh-cn": "记忆"
+      },
+      "description": {
+        "en": "Cross-session memory for DeepSeek Harness: long-term, short-term, user profile, session notebook and evolution archive — with decay, auto-record, anaphora resolution, a relation graph and optional vector search.",
+        "zh-cn": "给 DeepSeek Harness 的跨会话记忆：长期库、短期库、用户画像、会话小黑板、进化档案 —— 带衰减、自动落库、称谓消解、关系网，以及可选的向量检索。"
+      },
+      "author": "wff151",
+      "homepage": "https://github.com/wff151/dsh-memory",
+      "repository": {
+        "url": "https://github.com/wff151/dsh-memory"
+      },
+      "metadata": {
+        "category": "memory",
+        "keywords": [
+          "memory",
+          "long-term-memory",
+          "retrieval",
+          "rag",
+          "context",
+          "decay",
+          "profile",
+          "relation-graph"
+        ],
+        "labels": [
+          "stable",
+          "no-model-needed",
+          "chinese"
+        ],
+        "sortKeys": {
+          "stars": 0
+        }
+      },
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1793018532,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/wff151/dsh-memory",
+            "commit": "db482c743543e676bb2217b607de0643973358da"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.2"
+          }
+        }
+      ]
+    }
+  ]
+}
