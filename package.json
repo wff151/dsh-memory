@@ -1,0 +1,56 @@
+{
+  "name": "dsh-memory",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Long-term, short-term, profile, notebook and evolution memory for DeepSeek Harness — with decay, auto-record, anaphora resolution, relation graph, unique-feature retrieval and optional vector search.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "long-term-memory",
+    "rag",
+    "retrieval"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/wff151/dsh-memory",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wff151/dsh-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wff151/dsh-memory/issues"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx/esm tests/run-all.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-agent": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-system-prompt": { "optional": true }
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

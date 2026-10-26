@@ -1,0 +1,27 @@
+# 依赖
+node_modules/
+
+# 构建产物（源码是 .ts，由宿主打包）
+dist/
+*.tsbuildinfo
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志与临时
+*.log
+*.log.out
+_tmp_*
+_repo_check/
+
+# 本地测试产物
+.test-data/
+coverage/
+
+# 内部开发笔记（不发布：含本机路径与内部流程）
+ADAPT-0.2.1.md
+IMPROVE.md
+STATE.md

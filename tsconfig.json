@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src"],
+  "compilerOptions": {
+    "paths": {
+      "@deepseek-ai/cordis": ["../../../yuansi-deepseek-harness/vendor/cordis/src/index.ts"],
+      "@deepseek-ai/schemastery": ["../../../yuansi-deepseek-harness/vendor/schemastery/src/index.ts"],
+      "@deepseek-ai/cosmokit": ["../../../yuansi-deepseek-harness/vendor/cosmokit/src/index.ts"],
+      "@deepseek-ai/dsh-storage-domain": ["../../../yuansi-deepseek-harness/packages/storage/storage-domain/src/index.ts"],
+      "@deepseek-ai/dsh-storage": ["../../../yuansi-deepseek-harness/packages/storage/storage/src/index.ts"],
+      "@deepseek-ai/dsh-storage-json": ["../../../yuansi-deepseek-harness/packages/storage/storage-json/src/index.ts"],
+      "@deepseek-ai/dsh-tools": ["../../../yuansi-deepseek-harness/packages/core/tools/src/index.ts"],
+      "@deepseek-ai/dsh-session": ["../../../yuansi-deepseek-harness/packages/core/session/src/index.ts"],
+      "@deepseek-ai/dsh-session/*": ["../../../yuansi-deepseek-harness/packages/core/session/src/*"]
+    }
+  }
+}
