@@ -32,10 +32,22 @@ git clone https://github.com/wff151/dsh-memory.git node_modules/dsh-memory
 
 **重启 DSH** 生效。
 
-### 方式 B —— 从插件市场安装
+### 方式 B —— 从插件市场安装（推荐）
 
-DSH 的 **Plugins → Discover** 支持按索引源（index）安装。
-本仓库可作为一个 Git 条目被索引收录（提供 `repository` 与 `files` 字段）。
+DSH 的 **Plugins → Discover** 支持按索引源安装。本仓库自带一份市场索引：
+
+1. 打开 **Plugins** → **Discover** → **Add index source**
+2. 填入：
+   ```
+   https://raw.githubusercontent.com/wff151/dsh-memory/main/market/index.json
+   ```
+3. 市场里会出现 **Memory / 记忆**，点 **Install**
+
+索引格式为 **format 1**，用官方校验器
+（`@deepseek-ai/dsh-plugin-market-index` 的 `parseMarketIndex`）验证通过。
+版本**锁定到 Git commit**，装到的代码与索引指向的提交完全一致。
+
+索引本身的说明与格式约定见 [`market/README.md`](market/README.md)。
 
 ### 依赖
 
@@ -60,6 +72,7 @@ DSH 的 **Plugins → Discover** 支持按索引源（index）安装。
 | `docs/multi-round-report.md` | 100 问多轮实测 |
 | `docs/memory-rules-flow.html` | 规则流图（单文件，浏览器打开） |
 | `docs/benchmarks/` | 可复现的测试脚本 |
+| `market/index.json` | 插件市场索引（format 1，官方校验器验证） |
 
 ---
 
