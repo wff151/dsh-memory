@@ -25,3 +25,6 @@ coverage/
 ADAPT-0.2.1.md
 IMPROVE.md
 STATE.md
+
+# 记忆浏览快照（含个人对话原文与本机路径，生成器在 docs/benchmarks/）
+docs/benchmarks/memory-browser.html
