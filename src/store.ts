@@ -21,7 +21,101 @@ import {
 import type { MemoryId, MemoryMode, RecordId } from './types.ts'
 import { inferEntryKind } from './intent.ts'
 
+/**
+ * 存储写入的重试包装。
+ *
+ * **为什么需要**（2026-10-27 实测）：
+ * DSH 的 storage 用「写临时文件 → fsync → `rename` 覆盖」做原子替换。
+ * 在 Windows 上 `rename` 映射到 `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`，
+ * **只要目标文件当前被任何读句柄持有，就会失败 `EPERM`**。
+ *
+ * 实测证据（`_tools/test-write-conflict.mjs`）：
+ *   · 目标文件被一个读句柄持有 → `EPERM`
+ *   · 两个写入并发            → 成功 2/2
+ *   · 独立进程、无人持有       → 成功
+ *
+ * 而宿主本身时刻在读 `brain_memory.json`（渲染上下文、检索）。
+ * 于是插件写回时会周期性撞上 `EPERM`。
+ *
+ * 读句柄通常很短，所以**退避重试**能覆盖绝大多数情况。
+ */
+async function withRetry<T>(
+  op: () => Promise<T>,
+  what: string,
+  attempts = 6,
+): Promise<T> {
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await op()
+    } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code
+      // 只对"文件被占用"类错误重试；别的错误立刻抛，别把真问题藏起来。
+      if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw error
+      lastError = error
+      // 退避：20ms, 40ms, 80ms… 上限 320ms。总等待约 0.6 秒。
+      await new Promise(r => setTimeout(r, Math.min(320, 20 * 2 ** i)))
+    }
+  }
+  throw lastError
+}
+
+/**
+ * 给表句柄套一层"写操作带重试"的代理。
+ *
+ * 为什么在**表的层面**做而不是逐个调用点做：
+ * `store.ts` 里有 24 处 `tables.xxx.put/delete`，逐个包一层既啰嗦又容易漏。
+ * 表是唯一的写入口，包在这里一处就覆盖全部。
+ *
+ * 读方法（get/entries/keys/size）原样透传，不做任何包装 ——
+ * 读不写盘，不该受 EPERM 影响。
+ */
+function guardTable<K, V>(table: KvTable<K, V>, name: string): KvTable<K, V> {
+  return new Proxy(table, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function') return value
+
+      // 只包装会写盘的方法
+      if (prop === 'put') {
+        return (key: K, val: V) => withRetry(
+          () => (target.put as (k: K, v: V) => Promise<void>)(key, val),
+          `${name}.put`,
+        )
+      }
+      if (prop === 'delete') {
+        return (key: K) => withRetry(
+          () => (target.delete as (k: K) => Promise<boolean>)(key),
+          `${name}.delete`,
+        )
+      }
+      if (prop === 'update') {
+        return (key: K, fn: (prev: V) => V) => withRetry(
+          () => (target.update as (k: K, f: (p: V) => V) => Promise<V>)(key, fn),
+          `${name}.update`,
+        )
+      }
+      // 其余方法保持 this 绑定
+      return (value as (...args: unknown[]) => unknown).bind(target)
+    },
+  })
+}
+
 const MODES: readonly MemoryMode[] = ['daily', 'work']
+
+/**
+ * 两条短期记录是否"内容等价"（用于跳过无意义的写盘）。
+ *
+ * 只比**会变的字段**——权重、访问计数、最近访问时间、摘要、标题。
+ * 完整深比较没有必要：内容一致的条目本来就不该重写。
+ */
+function sameShortRecord(a: ShortTermItemRecord, b: ShortTermItemRecord): boolean {
+  return a.weight === b.weight
+    && a.accessCount === b.accessCount
+    && a.lastAccess === b.lastAccess
+    && a.summary === b.summary
+    && a.title === b.title
+}
 
 function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -56,11 +150,11 @@ export class MemoryStore {
     const domain = await ctx.storageDomain.open(memoryDomainSpec)
     store.domain = domain
     store.tables = {
-      public: domain.table('public'),
-      short: domain.table('short'),
-      permanent: domain.table('permanent'),
-      portable: domain.table('portable'),
-      evolution: domain.table('evolution'),
+      public: guardTable(domain.table('public'), 'public'),
+      short: guardTable(domain.table('short'), 'short'),
+      permanent: guardTable(domain.table('permanent'), 'permanent'),
+      portable: guardTable(domain.table('portable'), 'portable'),
+      evolution: guardTable(domain.table('evolution'), 'evolution'),
     }
     return store
   }
@@ -215,17 +309,33 @@ export class MemoryStore {
     return item
   }
 
-  /** Replace the short-term list for one mode (used by decay). */
+  /**
+   * Replace the short-term list for one mode (used by decay).
+   *
+   * **性能与 EPERM 的关键点**：`KvTable.put` / `delete` 每次都触发一次
+   * 整表写盘（写临时文件 → rename 覆盖）。所以逐条删+写会做上千次 rename，
+   * 而宿主时刻在读同一个文件 —— 在 Windows 上 `rename` 撞上读句柄就 `EPERM`。
+   *
+   * 两个改进：
+   *   1. **只处理真正变化的条目**：未变的直接跳过，不写盘
+   *   2. **每次写都退避重试**（见 {@link withRetry}）
+   */
   async replaceShortTerm(mode: MemoryMode, items: ShortTermItemRecord[]): Promise<void> {
     const tables = this.requireTables()
-    const keep = new Set(items.map(item => item.id))
-    for (const [id, item] of tables.short.entries()) {
+    const keep = new Map(items.map(item => [item.id, item]))
+
+    // 1) 删除：只删该 mode 下不在保留集里的
+    for (const [id, item] of [...tables.short.entries()]) {
       if (item.mode === mode && !keep.has(id)) {
-        await tables.short.delete(id)
+        await withRetry(() => tables.short.delete(id), `delete ${id}`)
       }
     }
-    for (const item of items) {
-      await tables.short.put(item.id, item)
+
+    // 2) 写入：**跳过内容没变的**（衰减不改内容的条目占多数）
+    for (const [id, item] of keep) {
+      const prev = tables.short.get(id)
+      if (prev !== undefined && sameShortRecord(prev, item)) continue
+      await withRetry(() => tables.short.put(id, item), `put ${id}`)
     }
   }
 

@@ -188,6 +188,42 @@ export interface Config {
    * 置 0 关闭。
    */
   shortContextSharePercent?: number
+  /**
+   * 上下文窗口大小从哪来：`auto`（自动探测）或 `manual`（用户填）。
+   *
+   * **默认 `manual`**。原因：自动探测在这版里从来没成功过 ——
+   * `session.requestContext()?.contextWindow` 只在 `prepareCall()` **之后**
+   * 才被写入，而插件钩到的是用户消息到达的那一刻（在请求之前），
+   * 于是探到的永远是空值，占比触发等于没做。
+   *
+   * `manual` 更诚实：你自己知道用的是 32k 还是 128k，填一次能用很久。
+   * `auto` 只在窗口变化时才更新（见 {@link contextWindowTokens} 的兜底逻辑）。
+   */
+  contextWindowMode?: 'auto' | 'manual'
+  /**
+   * 手动指定的上下文窗口（tokens）。`contextWindowMode: 'manual'` 时生效。
+   *
+   * 常见值：32768 / 65536 / 131072 / 1000000。默认 32768（保守值）。
+   * 填错不影响正确性，只影响"短期库占窗口百分之几"这条触发何时该动手 ——
+   * 填小了会提前裁剪，填大了会推迟。
+   */
+  contextWindowTokens?: number
+  /**
+   * `auto` 模式下重新询问模型窗口的间隔（小时，默认 12 = 一天两次）。
+   *
+   * 上下文窗口短时间内不会变，所以不需要频繁问。
+   * 另外两个触发点也会立即重问：
+   *   · 换模型时（provider/model 变了）
+   *   · 长时间没用后第一次活动（超过 {@link contextWindowProbeIdleHours}）
+   */
+  contextWindowProbeHours?: number
+  /**
+   * `auto` 模式下"闲置多久后重新询问"（小时，默认 12）。
+   *
+   * 同一台机器上模型可能被换掉（比如从 32k 换成 1M），
+   * 而定时器不会感知 —— 所以长时间没用后第一次活动时补问一次。
+   */
+  contextWindowProbeIdleHours?: number
 
   // ── 自动落库（每条用户消息写哪几层）───────────────────────────────
   //
@@ -278,6 +314,11 @@ export const Config: z<Config> = z.object({
   reflectionIntervalHours: z.number().default(24).volatile(),
   shortMaxItems: z.number().default(2000).volatile(),
   shortContextSharePercent: z.number().default(15).volatile(),
+  // 上下文窗口来源：手动填 还是 自动探测。默认手动（自动探测不可靠，见类型注释）。
+  contextWindowMode: z.union([z.const('auto'), z.const('manual')]).default('manual').volatile(),
+  contextWindowTokens: z.number().default(32768).volatile(),
+  contextWindowProbeHours: z.number().default(12).volatile(),
+  contextWindowProbeIdleHours: z.number().default(12).volatile(),
 
   // 拍平后的自动落库开关（原 autoRecord.*）
   autoRecordShort: z.boolean().default(true).volatile(),
@@ -318,6 +359,10 @@ export interface ResolvedConfig {
   decayIntervalHours: number
   shortMaxItems: number
   shortContextSharePercent: number
+  contextWindowMode: 'auto' | 'manual'
+  contextWindowTokens: number
+  contextWindowProbeHours: number
+  contextWindowProbeIdleHours: number
   autoRecord: { short: boolean; long: boolean; portable: boolean; answer: boolean; summaryLength: 'long' | 'short' }
   compactionArchive: boolean
   reflectionIntervalHours: number
@@ -373,6 +418,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     decayIntervalHours: config.decayIntervalHours.get(),
     shortMaxItems: config.shortMaxItems.get(),
     shortContextSharePercent: config.shortContextSharePercent.get(),
+    contextWindowMode: config.contextWindowMode.get(),
+    contextWindowTokens: config.contextWindowTokens.get(),
+    contextWindowProbeHours: config.contextWindowProbeHours.get(),
+    contextWindowProbeIdleHours: config.contextWindowProbeIdleHours.get(),
     // 拍平后的字段同样是 volatile 引用，必须走 .get()。
     autoRecord: {
       short: config.autoRecordShort.get(),
@@ -469,9 +518,70 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     ctx.logger.info('memory: dispatcher mode — abilities served through the single brain tool')
   }
 
-  // 最近一次看到的上下文窗口（tokens）。由 agent/inbox/claimed 更新。
-  // 0 表示"还不知道"——此时占比触发会跳过，只靠 maxItems 那条。
-  let lastContextWindow = 0
+  // ── 上下文窗口：手动 / 自动 ────────────────────────────────────
+  //
+  // 手动模式直接用配置值；自动模式由下面的 noteContextWindow 维护。
+  const manualWindow = resolved.contextWindowMode === 'manual'
+    && Number.isFinite(resolved.contextWindowTokens)
+    && resolved.contextWindowTokens > 0
+    ? resolved.contextWindowTokens
+    : 0
+
+  /** 自动探测到的窗口（tokens），0 = 还不知道。 */
+  let probedWindow = 0
+  /** 上次实际采用窗口的时刻（ms），用于"定时重问"与"闲置后重问"。 */
+  let lastWindowAt = 0
+  /** 上次探测时的 provider/model，用于"换模型时重问"。 */
+  let lastWindowKey = ''
+
+  /** 当前生效的窗口：手动模式优先，其次是探测值。 */
+  const effectiveContextWindow = (): number => (manualWindow > 0 ? manualWindow : probedWindow)
+
+  /**
+   * 采用一次观测到的窗口大小。
+   *
+   * 三个触发点决定"这次观测要不要真的重设"（按用户的方案）：
+   *   1. **定时**：距上次超过 `contextWindowProbeHours`（默认 12h = 一天两次）
+   *   2. **换模型**：provider/model 变了 → 立即重设
+   *   3. **闲置后**：距上次超过 `contextWindowProbeIdleHours`（默认 12h）
+   *      且中途没有活动 → 说明可能换过模型，补问一次
+   *
+   * 其余情况下**不覆盖**，避免同一配置被反复改写导致噪声。
+   *
+   * 注意：这个函数不会主动去"问模型" —— 宿主没有这样的接口。
+   * 它只是在宿主**自己报告** request/context 时决定要不要采纳。
+   * 这也解释了为什么手动模式更可靠：它不依赖宿主报告。
+   */
+  const noteContextWindow = (win: number, provider: string, model: string): void => {
+    const now = Date.now()
+    const key = `${provider}/${model}`
+    const probeMs = Math.max(1, resolved.contextWindowProbeHours) * 3_600_000
+    const idleMs = Math.max(1, resolved.contextWindowProbeIdleHours) * 3_600_000
+
+    const modelChanged = lastWindowKey !== '' && lastWindowKey !== key
+    const dueByTime = lastWindowAt === 0 || now - lastWindowAt >= probeMs
+    const dueByIdle = lastWindowAt !== 0 && now - lastWindowAt >= idleMs
+    const firstTime = probedWindow === 0
+
+    if (!firstTime && !modelChanged && !dueByTime && !dueByIdle) return
+
+    probedWindow = win
+    lastWindowAt = now
+    lastWindowKey = key
+    // 原因判定顺序：模型变了 > 首次 > 定时 > 闲置。
+    //
+    // 定时排在闲置前面是对的：当 probeHours 与 idleHours 同为 12h 时，
+    // 两者会同时成立，而这条其实是"到点例行重问"，不是"闲置很久没动"。
+    // 先判定时，日志才不会被误读成"用户半天没来"。
+    const reason = firstTime
+      ? '首次'
+      : modelChanged
+        ? '模型已换'
+        : dueByTime
+          ? '定时'
+          : '闲置后'
+    ctx.logger.info(`memory: context window = ${win} (${reason}, ${key})`)
+  }
 
   // Periodic short-term memory decay (port of decay.js): weight decays
   // exponentially with days since last access; over-age / under-threshold
@@ -484,7 +594,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         void runShortTermDecay(store, {
           maxItems: resolved.shortMaxItems,
           contextSharePercent: resolved.shortContextSharePercent,
-          contextWindowTokens: lastContextWindow,
+          contextWindowTokens: effectiveContextWindow(),
         })
           .then((summary) => {
             const total = summary.daily.archived.length + summary.work.archived.length
@@ -533,17 +643,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // long-term copy is deduped and searchable across sessions, and the portable
   // doc keeps its original role (session goal / solved / unresolved).
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
-    // 顺手记下当前模型的上下文窗口，供定时衰减算"占比触发"用。
-    //
-    // 为什么在这里取：定时器是全局的、没有 session；而这里能拿到 agent.session。
-    // 窗口大小随模型变（32k / 64k / 128k / 1M），取不到就让占比触发静默跳过，
-    // 不退化成"永远不触发"。
-    try {
-      const ctxWindow = agent.session.requestContext()?.contextWindow
-      if (typeof ctxWindow === 'number' && ctxWindow > 0) lastContextWindow = ctxWindow
-    } catch {
-      // requestContext 在某些早期阶段可能不可用——忽略，保持上一次的值。
-    }
+    // 上下文窗口的探测**不在这里** —— 见 session/event 里的 request/context 分支。
+    // 这里（用户消息刚到达）requestContext() 还没被本轮 prepareCall() 设置，
+    // 探到的永远是空值。这个位置曾经导致"占比触发"从未生效。
     if (message.source.kind !== 'user') return
     const text = message.content
       .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
@@ -564,6 +666,25 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // 助手回答也落短期（by: 'agent'）。用 session/event 而不是 inbox：
   // 助手消息不经过 inbox，日志事件才是权威来源。
   ctx.on('session/event', (session, event) => {
+    // ── 上下文窗口探测（auto 模式）───────────────────────────────
+    //
+    // `request/context` 是宿主在 prepareCall() **之后**写入的，
+    // 它带的 contextWindow 才是这一轮真正用的窗口大小。
+    //
+    // 之前把探测放在 agent/inbox/claimed（用户消息到达时），那时
+    // requestContext() 还没被本轮设置 —— 探到的永远是空值，
+    // 于是占比触发从未生效。这是那个 bug 的根因。
+    if (event.type === 'request/context') {
+      if (resolved.contextWindowMode !== 'auto') return
+      const data = event.data as { provider?: unknown, model?: unknown, contextWindow?: unknown } | undefined
+      const win = data?.contextWindow
+      if (typeof win !== 'number' || win <= 0) return
+      const provider = typeof data?.provider === 'string' ? data.provider : ''
+      const model = typeof data?.model === 'string' ? data.model : ''
+      noteContextWindow(win, provider, model)
+      return
+    }
+
     if (event.type === 'assistant/message') {
       if (!resolved.autoRecord.answer) return
       const content = (event.data as { message?: { content?: unknown } })?.message?.content
